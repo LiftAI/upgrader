@@ -1,3 +1,37 @@
+## 2.3.0
+
+* Enhanced to prevent the dialog and card from being closed when in a blocked state, either with a critical update, or when the minimum app version is enforced.
+
+## 2.2.1
+
+* Added support for mocking the Appcast.
+
+## 2.2.0
+
+* Added support for Arabic language localization.
+
+## 2.1.0
+
+* Added support for an optional minimum app version. If the installed version is below the minimum app version,
+the ignore and later buttons will be hidden. This is similar to the critical update attribute for Appcast.
+* The iOS App Store query will now default to the country code of the system locale,
+instead of `US`. This will help suggest upgrades to users from countries other than
+the US. The country code can be overriden with the optional `countryCode` parameter.
+
+## 2.0.0
+
+* Major enhancements!
+* This update provides language localization in English and Spanish using the new class UpgraderMessage, with the ability to add additional languages, and customize strings. Support for Spanish is included and will work without code changes.
+* A few parameters were removed, and if used, will be a breaking change. Most use of this update will not require code changes.
+* Five parameters removed: buttonTitleIgnore, buttonTitleLater, buttonTitleUpdate, prompt, title.
+* All parameters that were removed are now contained in the messages parameter.
+* The body of the message can now be customized and uses mustache style template variables.
+* Bumped version to 2.0.0
+
+## 0.11.2
+
+* Removed the restriction for Flutter SDK <1.18.0
+
 ## 0.11.1
 
 * Changed use of TargetPlatform and eliminated some warnings.
@@ -18,7 +52,7 @@ Maintenance issues and suggestions section.
 
 ## 0.10.2
 
-* Prepare for 1.0.0 version of sensors and package_info. ([dart_lsc](http://github.com/amirh/dart_lsc))
+* Prepare for 1.0.0 version of sensors and package_info. ([dart_lsc](https://github.com/amirh/dart_lsc))
 
 ## 0.10.1
 

@@ -15,6 +15,7 @@ import 'package:version/version.dart';
 
 import 'appcast.dart';
 import 'itunes_search_api.dart';
+import 'upgrade_messages.dart';
 
 /// Signature of callbacks that have no arguments and return bool.
 typedef BoolCallback = bool Function();
@@ -40,15 +41,6 @@ class Upgrader {
   /// When an appcast is configured for iOS, the iTunes lookup is not used.
   AppcastConfiguration appcastConfig;
 
-  /// The ignore button title, which defaults to ```Ignore```
-  String buttonTitleIgnore = 'Ignore'.toUpperCase();
-
-  /// The later button title, which defaults to ```Later```
-  String buttonTitleLater = 'Later'.toUpperCase();
-
-  /// The update button title, which defaults to ```Update Now```
-  String buttonTitleUpdate = 'Update Now'.toUpperCase();
-
   /// Provide an HTTP Client that can be replaced for mock testing.
   http.Client client = http.Client();
 
@@ -64,13 +56,11 @@ class Upgrader {
   /// Enable print statements for debugging.
   bool debugLogging = false;
 
+  /// The localized messages used for display in upgrader.
+  UpgraderMessages messages;
+
   final notInitializedExceptionMessage =
       'initialize() not called. Must be called first.';
-
-  String prompt = 'Would you like to update it now?';
-
-  /// The alert dialog title
-  String title = 'Update App?';
 
   /// Called when the ignore button is tapped or otherwise activated.
   /// Return false when the default behavior should not execute.
@@ -93,10 +83,16 @@ class Upgrader {
   /// Can alert dialog be dismissed on tap outside of the alert dialog. Not used by alert card. (default: false)
   bool canDismissDialog = false;
 
+  /// The country code that will override the system locale. Optional. Used only for iOS.
+  String countryCode;
+
+  /// The minimum app version supported by this app. Earlier versions of this app
+  /// will be forced to update to the current version. Optional.
+  String minAppVersion;
+
   bool _displayed = false;
   bool _initCalled = false;
   PackageInfo _packageInfo;
-  String _countryCode;
 
   String _installedVersion;
   String _appStoreVersion;
@@ -110,6 +106,7 @@ class Upgrader {
   String _lastVersionAlerted;
   String _userIgnoredVersion;
   bool _hasAlerted = false;
+  bool _isCriticalUpdate = false;
 
   factory Upgrader() {
     return _singleton;
@@ -137,6 +134,8 @@ class Upgrader {
 
     _initCalled = true;
 
+    messages ??= UpgraderMessages();
+
     await _getSavedPrefs();
 
     if (_packageInfo == null) {
@@ -146,11 +145,9 @@ class Upgrader {
             'upgrader: package info packageName: ${_packageInfo.packageName}');
         print('upgrader: package info version: ${_packageInfo.version}');
       }
-      _playStoreListingURL =  'https://play.google.com/store/apps/details?id=${_packageInfo.packageName}';
+      _playStoreListingURL =
+          'https://play.google.com/store/apps/details?id=${_packageInfo.packageName}';
     }
-
-    // Get the current locale of the device (TBD), defaulting to US.
-    _countryCode ??= 'US';
 
     await _updateVersionInfo();
 
@@ -166,7 +163,7 @@ class Upgrader {
         print('upgrader: appcast is available for this platform');
       }
 
-      final appcast = Appcast();
+      final appcast = Appcast(client: client);
       await appcast.parseAppcastItemsFromUri(appcastConfig.url);
       if (debugLogging) {
         var count = appcast.items == null ? 0 : appcast.items.length;
@@ -183,8 +180,7 @@ class Upgrader {
         _appStoreVersion ??= bestItem.versionString;
         _appStoreListingURL ??= bestItem.fileURL;
         if (bestItem.isCriticalUpdate) {
-          showIgnore = false;
-          showLater = false;
+          _isCriticalUpdate = true;
         }
       }
     } else {
@@ -199,9 +195,12 @@ class Upgrader {
         return false;
       }
 
+      // The  country code of the locale, defaulting to `US`.
+      final code = countryCode ?? findCountryCode();
+
       final iTunes = ITunesSearchAPI();
       iTunes.client = client;
-      final country = _countryCode;
+      final country = code;
       final response = await iTunes.lookupByBundleId(_packageInfo.packageName,
           country: country);
 
@@ -269,7 +268,7 @@ class Upgrader {
         Future.delayed(Duration(milliseconds: 0), () {
           _showDialog(
               context: context,
-              title: title,
+              title: messages.message(UpgraderMessage.title),
               message: message(),
               canDismissDialog: canDismissDialog);
         });
@@ -277,15 +276,45 @@ class Upgrader {
     }
   }
 
+  bool blocked() {
+    return belowMinAppVersion() || _isCriticalUpdate;
+  }
+
   bool shouldDisplayUpgrade() {
+    // If installed version below minimum app version, or is a critical update,
+    // disable ignore and later buttons.
+    if (blocked()) {
+      showIgnore = false;
+      showLater = false;
+    }
     if (debugDisplayAlways || (debugDisplayOnce && !_hasAlerted)) {
       return true;
     }
-
-    if (isTooSoon() || alreadyIgnoredThisVersion() || !isUpdateAvailable()) {
+    if (!isUpdateAvailable()) {
+      return false;
+    }
+    if (blocked()) {
+      return true;
+    }
+    if (isTooSoon() || alreadyIgnoredThisVersion()) {
       return false;
     }
     return true;
+  }
+
+  /// Is installed version below minimum app version?
+  bool belowMinAppVersion() {
+    var rv = false;
+    if (minAppVersion != null) {
+      try {
+        final minVersion = Version.parse(minAppVersion);
+        final installedVersion = Version.parse(_installedVersion);
+        rv = installedVersion < minVersion;
+      } catch (e) {
+        print(e);
+      }
+    }
+    return rv;
   }
 
   bool isTooSoon() {
@@ -308,7 +337,6 @@ class Upgrader {
     }
 
     if (_updateAvailable == null) {
-
       final appStoreVersion = Version.parse(_appStoreVersion);
       final installedVersion = Version.parse(_installedVersion);
 
@@ -328,6 +356,24 @@ class Upgrader {
       }
     }
     return _updateAvailable != null;
+  }
+
+  /// Determine the current country code, either from the context, or
+  /// from the system-reported default locale of the device. The default
+  /// is `US`.
+  String findCountryCode({BuildContext context}) {
+    Locale locale;
+    if (context != null) {
+      locale = Localizations.localeOf(context, nullOk: true);
+    } else {
+      // Get the system locale
+      locale = WidgetsBinding.instance.window.locale;
+    }
+    final code = locale == null ? 'US' : locale.countryCode;
+    if (debugLogging) {
+      print('upgrader: countryCode: $code');
+    }
+    return code;
   }
 
   void _showDialog(
@@ -353,21 +399,26 @@ class Upgrader {
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               Text(message),
-              Padding(padding: EdgeInsets.only(top: 15.0), child: Text(prompt)),
+              Padding(
+                  padding: EdgeInsets.only(top: 15.0),
+                  child: Text(messages.message(UpgraderMessage.prompt))),
             ],
           ),
           actions: <Widget>[
             if (showIgnore)
               FlatButton(
-                  child: Text(buttonTitleIgnore),
+                  child:
+                      Text(messages.message(UpgraderMessage.buttonTitleIgnore)),
                   onPressed: () => onUserIgnored(context, true)),
             if (showLater)
               FlatButton(
-                  child: Text(buttonTitleLater),
+                  child:
+                      Text(messages.message(UpgraderMessage.buttonTitleLater)),
                   onPressed: () => onUserLater(context, true)),
             FlatButton(
-                child: Text(buttonTitleUpdate),
-                onPressed: () => onUserUpdated(context, true)),
+                child:
+                    Text(messages.message(UpgraderMessage.buttonTitleUpdate)),
+                onPressed: () => onUserUpdated(context, !blocked())),
           ],
         );
       },
@@ -376,7 +427,7 @@ class Upgrader {
 
   void onUserIgnored(BuildContext context, bool shouldPop) {
     if (debugLogging) {
-      print('upgrader: button tapped: $buttonTitleIgnore');
+      print('upgrader: button tapped: ignore');
     }
 
     // If this callback has been provided, call it.
@@ -396,7 +447,7 @@ class Upgrader {
 
   void onUserLater(BuildContext context, bool shouldPop) {
     if (debugLogging) {
-      print('upgrader: button tapped: $buttonTitleLater');
+      print('upgrader: button tapped: later');
     }
 
     // If this callback has been provided, call it.
@@ -414,7 +465,7 @@ class Upgrader {
 
   void onUserUpdated(BuildContext context, bool shouldPop) {
     if (debugLogging) {
-      print('upgrader: button tapped: $buttonTitleUpdate');
+      print('upgrader: button tapped: update now');
     }
 
     // If this callback has been provided, call it.
@@ -493,7 +544,6 @@ class Upgrader {
   }
 
   void _sendUserToAppStore(String storeListingUrl) async {
-    
     if (storeListingUrl == null || storeListingUrl.isEmpty) {
       if (debugLogging) {
         print('upgrader: empty storeListing');
@@ -506,7 +556,13 @@ class Upgrader {
     }
 
     if (await canLaunch(storeListingUrl)) {
-      await launch(storeListingUrl);
+      try {
+        await launch(storeListingUrl);
+      } catch (e) {
+        if (debugLogging) {
+          print('upgrader: launch to app store failed: $e');
+        }
+      }
     } else {}
   }
 }
