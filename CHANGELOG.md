@@ -1,3 +1,12 @@
+## 2.4.1
+
+* Fixed issue with default country code
+
+## 2.4.0
+
+* Added new language translations for French ('fr') and Portuguese ('pt').
+* Updated the Appcast class to support a newer version of the Xml package.
+
 ## 2.3.0
 
 * Enhanced to prevent the dialog and card from being closed when in a blocked state, either with a critical update, or when the minimum app version is enforced.
